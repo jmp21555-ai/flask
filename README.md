@@ -1,5 +1,7 @@
 # Modern Flask Web App Prototype
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/flask-1?referralCode=asepsp)
+
 ![static-site](preview.png)
 
 This is a prototype of a modern web application built with Flask. It features a clean, responsive design, handles environment variables for configuration, and includes a custom-styled 404 error page.
