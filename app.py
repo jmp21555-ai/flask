@@ -1,6 +1,5 @@
-import os, json, logging
+import os, logging
 from flask import Flask, request, jsonify
-from binance.client import Client
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -8,8 +7,6 @@ logging.basicConfig(level=logging.INFO)
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 API_KEY        = os.environ.get("BINANCE_API_KEY", "")
 API_SECRET     = os.environ.get("BINANCE_SECRET", "")
-
-client = Client(API_KEY, API_SECRET)
 
 in_position = False
 qty_bought  = 0.0
@@ -31,6 +28,8 @@ def webhook():
         if in_position:
             return jsonify({"status": "skipped"}), 200
         try:
+            from binance.client import Client
+            client = Client(API_KEY, API_SECRET)
             quote_qty = float(data.get("quote_qty", 100))
             order = client.order_market_buy(symbol=symbol, quoteOrderQty=quote_qty)
             in_position = True
@@ -43,6 +42,8 @@ def webhook():
         if not in_position:
             return jsonify({"status": "skipped"}), 200
         try:
+            from binance.client import Client
+            client = Client(API_KEY, API_SECRET)
             order = client.order_market_sell(symbol=symbol_held, quantity=qty_bought)
             in_position = False
             qty_bought  = 0.0
