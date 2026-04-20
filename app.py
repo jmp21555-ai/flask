@@ -13,7 +13,7 @@ client = Client(
 
 WEBHOOK_SECRET  = os.environ['WEBHOOK_SECRET']
 SYMBOL          = os.environ.get('TRADING_PAIR', 'BTCUSDC')
-QUOTE_QTY       = float(os.environ.get('ORDER_AMOUNT_USDC', 17000))
+QUOTE_QTY       = float(os.environ.get('ORDER_AMOUNT_USDC', 2000))
 SL_PCT          = float(os.environ.get('SL_PCT', 5.0))  # -5% anti-crash
 
 @app.route('/webhook', methods=['POST'])
