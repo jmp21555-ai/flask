@@ -1,20 +1,18 @@
 from flask import Flask, request, jsonify
-from binance.client import Client
-from binance.enums import *
-import os, logging
+import os, logging, okx_client as okx
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-client = Client(
-    os.environ['BINANCE_API_KEY'],
-    os.environ['BINANCE_API_SECRET']
-)
+WEBHOOK_SECRET = os.environ['WEBHOOK_SECRET']
+SYMBOL         = os.environ.get('TRADING_PAIR', 'BTC-USDC')
+PCT_EQUITY     = float(os.environ.get('ORDER_PCT_EQUITY', 10.0))  # % de l'équité par trade
+SL_PCT         = float(os.environ.get('SL_PCT', 5.0))             # -5% anti-crash
+MIN_NOTIONAL   = float(os.environ.get('MIN_NOTIONAL_USDC', 10.0))
 
-WEBHOOK_SECRET  = os.environ['WEBHOOK_SECRET']
-SYMBOL          = os.environ.get('TRADING_PAIR', 'BTCUSDC')
-QUOTE_QTY       = float(os.environ.get('ORDER_AMOUNT_USDC', 2000))
-SL_PCT          = float(os.environ.get('SL_PCT', 5.0))  # -5% anti-crash
+# Seuil pour considérer qu'on "a" une position (poussière BTC exclue)
+BTC_DUST_THRESHOLD = 0.0001
+
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -25,85 +23,97 @@ def webhook():
         logging.warning("Webhook rejeté : secret invalide")
         return jsonify({"error": "unauthorized"}), 401
 
-    side = data.get('side', '').upper()
+    side   = data.get('side', '').upper()
     symbol = data.get('symbol', SYMBOL)
 
     # ── BUY ───────────────────────────────────────────────
     if side == 'BUY':
-        # 1. Ordre d'achat market
-        buy_order = client.order_market_buy(
-            symbol=symbol,
-            quoteOrderQty=QUOTE_QTY
-        )
-        logging.info(f"BUY exécuté : {buy_order}")
+        # 1 trade à la fois : on vérifie qu'il n'y a pas déjà une position ouverte
+        current_btc = okx.get_btc_balance()
+        if current_btc > BTC_DUST_THRESHOLD:
+            logging.warning(f"BUY ignoré : position déjà ouverte ({current_btc} BTC)")
+            return jsonify({"status": "skip", "reason": "position déjà ouverte"}), 200
 
-        # 2. Prix d'entrée réel obtenu
-        entry_price = float(buy_order['fills'][0]['price'])
+        # 2. Calcul du montant en % de l'équité
+        equity = okx.get_equity_usdc()
+        notional = round(equity * (PCT_EQUITY / 100.0), 2)
 
-        # 3. Calcul du SL à -5%
-        sl_price = round(entry_price * (1 - SL_PCT / 100), 2)
+        if notional < MIN_NOTIONAL:
+            logging.warning(f"BUY ignoré : montant {notional} USDC sous le seuil mini")
+            return jsonify({"status": "skip", "reason": "montant insuffisant"}), 200
 
-        # 4. Quantité BTC achetée
-        qty_btc = float(buy_order['executedQty'])
+        # 3. Ordre d'achat Market
+        buy_result = okx.place_market_buy(notional, inst_id=symbol)
+        logging.info(f"BUY envoyé : {buy_result}")
 
-        # 5. Pose du Stop Loss Market sur Binance
-        sl_order = client.create_order(
-            symbol=symbol,
-            side=SIDE_SELL,
-            type=ORDER_TYPE_STOP_LOSS,
-            quantity=qty_btc,
-            stopPrice=sl_price,
-            timeInForce=TIME_IN_FORCE_GTC
-        )
-        logging.info(f"SL posé à {sl_price} USDC : {sl_order}")
+        if buy_result.get("code") != "0":
+            logging.error(f"Erreur BUY OKX : {buy_result}")
+            return jsonify({"status": "error", "detail": buy_result}), 500
+
+        order_id = buy_result["data"][0]["ordId"]
+
+        # 4. Récupère le prix moyen d'exécution réel
+        order_details = okx.get_order_details(order_id, inst_id=symbol)
+        try:
+            fill = order_details["data"][0]
+            entry_price = float(fill["avgPx"])
+            qty_btc     = float(fill["accFillSz"])
+        except (KeyError, IndexError, ValueError):
+            logging.error(f"Impossible de lire les détails de l'ordre : {order_details}")
+            return jsonify({"status": "error", "detail": "lecture ordre échouée"}), 500
+
+        # 5. Calcul et pose du Stop Loss
+        sl_price = round(entry_price * (1 - SL_PCT / 100.0), 1)
+        sl_result = okx.place_stop_loss(qty_btc, sl_price, inst_id=symbol)
+        logging.info(f"SL posé à {sl_price} USDC : {sl_result}")
 
         return jsonify({
             "status": "ok",
             "side": "BUY",
             "entry_price": entry_price,
             "qty_btc": qty_btc,
+            "notional_usdc": notional,
             "sl_price": sl_price,
-            "sl_order_id": sl_order['orderId']
+            "sl_result": sl_result
         })
 
     # ── SELL ──────────────────────────────────────────────
     elif side == 'SELL':
-        # 1. Récupère la quantité BTC disponible
-        balance = client.get_asset_balance(asset='BTC')
-        qty_btc = float(balance['free'])
-
-        if qty_btc < 0.0001:
+        qty_btc = okx.get_btc_balance()
+        if qty_btc < BTC_DUST_THRESHOLD:
             logging.warning("SELL ignoré : pas de BTC en position")
             return jsonify({"status": "no_position"}), 200
 
-        # 2. Annule tous les ordres SL ouverts
-        open_orders = client.get_open_orders(symbol=symbol)
-        for order in open_orders:
-            client.cancel_order(symbol=symbol, orderId=order['orderId'])
-            logging.info(f"SL annulé : orderId {order['orderId']}")
+        # 1. Annule le(s) Stop Loss ouverts avant de vendre
+        cancel_result = okx.cancel_all_algo_orders(inst_id=symbol)
+        logging.info(f"SL annulés : {cancel_result}")
 
-        # 3. Vente Market de tout le BTC
-        sell_order = client.order_market_sell(
-            symbol=symbol,
-            quantity=round(qty_btc, 5)
-        )
-        logging.info(f"SELL exécuté : {sell_order}")
+        # 2. Vente Market de tout le BTC disponible
+        sell_result = okx.place_market_sell(qty_btc, inst_id=symbol)
+        logging.info(f"SELL exécuté : {sell_result}")
+
+        if sell_result.get("code") != "0":
+            logging.error(f"Erreur SELL OKX : {sell_result}")
+            return jsonify({"status": "error", "detail": sell_result}), 500
 
         return jsonify({
             "status": "ok",
             "side": "SELL",
-            "qty_btc": qty_btc
+            "qty_btc": qty_btc,
+            "sell_result": sell_result
         })
 
     return jsonify({"error": "side invalide"}), 400
 
 
-@app.route('/test-binance', methods=['GET'])
-def test_binance():
-    balance = client.get_asset_balance(asset='USDC')
+@app.route('/test-okx', methods=['GET'])
+def test_okx():
+    equity = okx.get_equity_usdc()
+    btc_bal = okx.get_btc_balance()
     return jsonify({
         "status": "ok",
-        "usdc_balance": balance['free']
+        "equity_usdc": equity,
+        "btc_balance": btc_bal
     })
 
 
