@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify
 from flask import Flask, request, jsonify
 import os, logging, okx_client as okx 
 
-app = Flask(__name__)
+app = Flask(__name__) 
 logging.basicConfig(level=logging.INFO)
 
 WEBHOOK_SECRET = os.environ['WEBHOOK_SECRET']
