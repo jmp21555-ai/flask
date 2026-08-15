@@ -115,7 +115,13 @@ def test_okx():
         "equity_usdc": equity,
         "btc_balance": btc_bal
     })
-
+    
+@app.route('/debug-balance', methods=['GET'])
+def debug_balance():
+    import requests as req
+    path = "/api/v5/account/balance"
+    r = req.get(okx.BASE_URL + path, headers=okx._headers("GET", path))
+    return jsonify(r.json())
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
