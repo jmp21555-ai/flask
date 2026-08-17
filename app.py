@@ -144,6 +144,7 @@ def debug_balance():
     path = "/api/v5/account/balance"
     r = req.get(okx.BASE_URL + path, headers=okx._headers("GET", path))
     return jsonify(r.json())
+    
 @app.route('/check-order/<order_id>', methods=['GET'])
 def check_order(order_id):
     result = okx.get_order_details(order_id, inst_id="BTC-USDC")
