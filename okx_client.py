@@ -1,6 +1,6 @@
 import hmac, base64, hashlib, time, json, os, requests
 
-BASE_URL = "https://www.okx.com"
+BASE_URL = "https://my.okx.com"
 DEMO = os.environ.get('OKX_DEMO', '0') == '1'
 
 def _timestamp():
