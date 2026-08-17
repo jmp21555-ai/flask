@@ -24,12 +24,16 @@ def _headers(method, path, body=""):
     return h
 
 def get_equity_usdc():
-    """Retourne l'équité totale du compte en USDC."""
+    """Retourne l'équité disponible en USDC."""
     path = "/api/v5/account/balance?ccy=USDC"
     r = requests.get(BASE_URL + path, headers=_headers("GET", path))
     data = r.json()
     try:
-        return float(data["data"][0]["details"][0]["eq"])
+        details = data["data"][0]["details"]
+        for d in details:
+            if d["ccy"] == "USDC":
+                return float(d["eq"])
+        return 0.0
     except (KeyError, IndexError, TypeError):
         return 0.0
 
@@ -39,7 +43,11 @@ def get_btc_balance():
     r = requests.get(BASE_URL + path, headers=_headers("GET", path))
     data = r.json()
     try:
-        return float(data["data"][0]["details"][0]["availBal"])
+        details = data["data"][0]["details"]
+        for d in details:
+            if d["ccy"] == "BTC":
+                return float(d["availBal"])
+        return 0.0
     except (KeyError, IndexError, TypeError):
         return 0.0
 
