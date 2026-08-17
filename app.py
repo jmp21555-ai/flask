@@ -120,12 +120,23 @@ def test_okx():
         "btc_balance": btc_bal
     })
     
-@app.route('/debug-balance', methods=['GET'])
-def debug_balance():
-    import requests as req
-    path = "/api/v5/account/balance"
-    r = req.get(okx.BASE_URL + path, headers=okx._headers("GET", path))
-    return jsonify(r.json())
+@app.route('/debug-config', methods=['GET'])
+def debug_config():
+    api_key = os.environ.get('OKX_API_KEY', '')
+    secret = os.environ.get('OKX_SECRET_KEY', '')
+    passphrase = os.environ.get('OKX_PASSPHRASE', '')
+    demo = os.environ.get('OKX_DEMO', 'NON_DEFINI')
+    return jsonify({
+        "OKX_DEMO_value": demo,
+        "api_key_length": len(api_key),
+        "api_key_start": api_key[:4] if api_key else "VIDE",
+        "api_key_end": api_key[-4:] if api_key else "VIDE",
+        "api_key_has_space": api_key != api_key.strip(),
+        "secret_length": len(secret),
+        "secret_has_space": secret != secret.strip(),
+        "passphrase_length": len(passphrase),
+        "passphrase_has_space": passphrase != passphrase.strip(),
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
