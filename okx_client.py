@@ -66,7 +66,8 @@ def place_market_buy(notional_usdc, inst_id="BTC-USDC"):
         "side": "buy",
         "ordType": "market",
         "sz": str(round(notional_usdc, 2)),
-        "tgtCcy": "quote_ccy"   # sz exprimé en USDC
+        "tgtCcy": "quote_ccy",
+        "slippagePct": "0.1"
     })
     r = requests.post(BASE_URL + path, headers=_headers("POST", path, body), data=body)
     return r.json()
@@ -80,7 +81,8 @@ def place_market_sell(qty_btc, inst_id="BTC-USDC"):
         "side": "sell",
         "ordType": "market",
         "sz": str(qty_btc),
-        "tgtCcy": "base_ccy"
+        "tgtCcy": "base_ccy",
+        "slippagePct": "0.1"
     })
     r = requests.post(BASE_URL + path, headers=_headers("POST", path, body), data=body)
     return r.json()
