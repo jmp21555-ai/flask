@@ -120,7 +120,7 @@ def test_okx():
         "btc_balance": btc_bal
     })
     
-    @app.route('/test-sell-small', methods=['GET'])
+@app.route('/test-sell-small', methods=['GET'])
 def test_sell_small():
     if request.args.get('secret') != WEBHOOK_SECRET:
         return jsonify({"error": "unauthorized"}), 401
