@@ -120,6 +120,27 @@ def test_okx():
         "btc_balance": btc_bal
     })
     
+    @app.route('/test-sell-small', methods=['GET'])
+def test_sell_small():
+    if request.args.get('secret') != WEBHOOK_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    qty = request.args.get('qty', '0.001')
+    symbol = request.args.get('symbol', SYMBOL)
+    result = okx.place_market_sell(qty, inst_id=symbol)
+    logging.info(f"TEST SELL small ({qty} BTC) : {result}")
+    return jsonify(result)
+
+
+@app.route('/test-buy-small', methods=['GET'])
+def test_buy_small():
+    if request.args.get('secret') != WEBHOOK_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    notional = float(request.args.get('notional', '20'))
+    symbol = request.args.get('symbol', SYMBOL)
+    result = okx.place_market_buy(notional, inst_id=symbol)
+    logging.info(f"TEST BUY small ({notional} USDC) : {result}")
+    return jsonify(result)
+    
 @app.route('/debug-config', methods=['GET'])
 def debug_config():
     api_key = os.environ.get('OKX_API_KEY', '')
