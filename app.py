@@ -3,7 +3,7 @@
 from flask import Flask, request, jsonify
 
 from flask import Flask, request, jsonify
-import os, logging, jason, okx_client as okx 
+import os, logging, json, okx_client as okx 
 
 app = Flask(__name__) 
 logging.basicConfig(level=logging.INFO)
