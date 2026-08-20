@@ -166,6 +166,23 @@ def debug_balance():
     r = req.get(okx.BASE_URL + path, headers=okx._headers("GET", path))
     return jsonify(r.json())
 
+@app.route('/debug-reset-btc', methods=['GET'])
+def debug_reset_btc():
+    if request.args.get('secret') != WEBHOOK_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    import requests as req
+    amt = request.args.get('amt', '0.99059359')
+    adj_type = request.args.get('type', 'reduce')
+    path = "/api/v5/account/demo-adjust-balance"
+    body = json.dumps({
+        "type": adj_type,
+        "adjustments": [
+            {"ccy": "BTC", "amt": amt}
+        ]
+    })
+    r = req.post(okx.BASE_URL + path, headers=okx._headers("POST", path, body), data=body)
+    return jsonify(r.json())
+
 @app.route('/debug-book', methods=['GET'])
 def debug_book():
     import requests as req
