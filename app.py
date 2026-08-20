@@ -177,7 +177,8 @@ def debug_book():
     
 @app.route('/check-order/<order_id>', methods=['GET'])
 def check_order(order_id):
-    result = okx.get_order_details(order_id, inst_id="BTC-USDC")
+    symbol = request.args.get('symbol', 'BTC-USDC')
+    result = okx.get_order_details(order_id, inst_id=symbol)
     return jsonify(result)
 
 if __name__ == '__main__':
