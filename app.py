@@ -165,6 +165,15 @@ def debug_balance():
     path = "/api/v5/account/balance"
     r = req.get(okx.BASE_URL + path, headers=okx._headers("GET", path))
     return jsonify(r.json())
+
+@app.route('/debug-book', methods=['GET'])
+def debug_book():
+    import requests as req
+    inst_id = request.args.get('symbol', SYMBOL)
+    sz = request.args.get('sz', '10')
+    path = f"/api/v5/market/books?instId={inst_id}&sz={sz}"
+    r = req.get(okx.BASE_URL + path, headers=okx._headers("GET", path))
+    return jsonify(r.json())
     
 @app.route('/check-order/<order_id>', methods=['GET'])
 def check_order(order_id):
