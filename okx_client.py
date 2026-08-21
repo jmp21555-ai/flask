@@ -92,7 +92,7 @@ def get_order_details(order_id, inst_id="BTC-USDC"):
     path = f"/api/v5/trade/order?instId={inst_id}&ordId={order_id}"
     r = requests.get(BASE_URL + path, headers=_headers("GET", path))
     return r.json()
-
+    
 def place_stop_loss(qty_btc, trigger_price, inst_id="BTC-USDC"):
     """Pose un ordre stop (algo order) qui se déclenche en Market à trigger_price."""
     path = "/api/v5/trade/order-algo"
@@ -107,6 +107,7 @@ def place_stop_loss(qty_btc, trigger_price, inst_id="BTC-USDC"):
     })
     r = requests.post(BASE_URL + path, headers=_headers("POST", path, body), data=body)
     return r.json()
+
 
 def cancel_all_algo_orders(inst_id="BTC-USDC"):
     """Annule tous les ordres stop (algo) ouverts sur l'instrument."""
