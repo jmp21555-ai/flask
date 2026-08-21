@@ -3,7 +3,7 @@
 from flask import Flask, request, jsonify
 
 from flask import Flask, request, jsonify
-import os, logging, json, okx_client as okx 
+import os, logging, json, time, okx_client as okx 
 
 app = Flask(__name__) 
 logging.basicConfig(level=logging.INFO)
@@ -68,6 +68,7 @@ def webhook():
 
         # 5. Calcul et pose du Stop Loss
         sl_price = round(entry_price * (1 - SL_PCT / 100.0), 1)
+        time.sleep(1) 
         sl_result = okx.place_stop_loss(qty_btc, sl_price, inst_id=symbol)
         logging.info(f"SL posé à {sl_price} USDC : {sl_result}")
 
