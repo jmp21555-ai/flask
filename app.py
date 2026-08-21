@@ -140,6 +140,16 @@ def test_buy_small():
     result = okx.place_market_buy(notional, inst_id=symbol)
     logging.info(f"TEST BUY small ({notional} USDC) : {result}")
     return jsonify(result)
+
+@app.route('/test-stop-loss', methods=['GET'])
+def test_stop_loss():
+    if request.args.get('secret') != WEBHOOK_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    qty = request.args.get('qty', '0.001')
+    trigger = float(request.args.get('trigger', '50000'))
+    symbol = request.args.get('symbol', 'BTC-EUR')
+    result = okx.place_stop_loss(qty, trigger, inst_id=symbol)
+    return jsonify(result)
     
 @app.route('/debug-config', methods=['GET'])
 def debug_config():
