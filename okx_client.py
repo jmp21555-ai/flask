@@ -25,7 +25,7 @@ def _headers(method, path, body=""):
 
 def get_equity_usdc():
     """Retourne l'équité disponible en USDC."""
-    path = "/api/v5/account/balance?ccy=USDC"
+    path = "/api/v5/account/balance"
     r = requests.get(BASE_URL + path, headers=_headers("GET", path))
     data = r.json()
     try:
@@ -39,7 +39,7 @@ def get_equity_usdc():
 
 def get_btc_balance():
     """Retourne le solde BTC disponible (position actuelle)."""
-    path = "/api/v5/account/balance?ccy=BTC"
+    path = "/api/v5/account/balance"
     r = requests.get(BASE_URL + path, headers=_headers("GET", path))
     data = r.json()
     try:
