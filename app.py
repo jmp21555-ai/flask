@@ -208,6 +208,14 @@ def check_order(order_id):
     result = okx.get_order_details(order_id, inst_id=symbol)
     return jsonify(result)
 
+@app.route('/cleanup-algo', methods=['GET'])
+def cleanup_algo():
+    if request.args.get('secret') != WEBHOOK_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    symbol = request.args.get('symbol', 'BTC-EUR')
+    result = okx.cancel_all_algo_orders(inst_id=symbol)
+    return jsonify(result)
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port) 
