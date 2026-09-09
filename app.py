@@ -56,27 +56,33 @@ def webhook():
 
         order_id = buy_result["data"][0]["ordId"]
 
-        # 4. Récupère le prix moyen d'exécution réel
+          # 4. Récupère le prix moyen d'exécution réel
         order_details = okx.get_order_details(order_id, inst_id=symbol)
         try:
             fill = order_details["data"][0]
             entry_price = float(fill["avgPx"])
-            qty_btc     = float(fill["accFillSz"])
+            qty_btc     = float(fill["accFillSz"])  # gardé pour le log/retour JSON uniquement
         except (KeyError, IndexError, ValueError):
             logging.error(f"Impossible de lire les détails de l'ordre : {order_details}")
             return jsonify({"status": "error", "detail": "lecture ordre échouée"}), 500
 
         # 5. Calcul et pose du Stop Loss
         sl_price = round(entry_price * (1 - SL_PCT / 100.0), 1)
-        time.sleep(1) 
-        sl_result = okx.place_stop_loss(qty_btc, sl_price, inst_id=symbol)
-        logging.info(f"SL posé à {sl_price} USDC : {sl_result}")
+        time.sleep(1)
 
+        # Correctif : on interroge le VRAI solde BTC disponible (après frais),
+        # plutôt que la quantité brute accFillSz qui ne tient pas compte
+        # des frais prélevés en BTC sur l'achat -> cause du rejet systématique 51008.
+        real_qty_btc = okx.get_btc_balance()
+        logging.info(f"Solde BTC réel avant pose SL : {real_qty_btc} (vs accFillSz brut : {qty_btc})")
+
+        sl_result = okx.place_stop_loss(real_qty_btc, sl_price, inst_id=symbol)
+        
         return jsonify({
             "status": "ok",
             "side": "BUY",
             "entry_price": entry_price,
-            "qty_btc": qty_btc,
+            "qty_btc": real_qty_btc,          # ← quantité réelle utilisée pour le SL
             "notional_usdc": notional,
             "sl_price": sl_price,
             "sl_result": sl_result
