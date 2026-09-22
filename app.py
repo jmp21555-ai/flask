@@ -1,165 +1,166 @@
-
-# force redeploy 2
 from flask import Flask, request, jsonify
+import os, logging, json, time, hmac, threading
+import okx_client as okx
 
-from flask import Flask, request, jsonify
-import os, logging, json, time, okx_client as okx 
-
-app = Flask(__name__) 
+app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 WEBHOOK_SECRET = os.environ['WEBHOOK_SECRET']
 SYMBOL         = os.environ.get('TRADING_PAIR', 'BTC-USDC')
-PCT_EQUITY     = float(os.environ.get('ORDER_PCT_EQUITY', 10.0))  # % de l'équité par trade
-SL_PCT         = float(os.environ.get('SL_PCT', 5.0))             # -5% anti-crash
+PCT_EQUITY     = float(os.environ.get('ORDER_PCT_EQUITY', 10.0))
+SL_PCT         = float(os.environ.get('SL_PCT', 5.0))
 MIN_NOTIONAL   = float(os.environ.get('MIN_NOTIONAL_USDC', 10.0))
 
-# Seuil pour considérer qu'on "a" une position (poussière BTC exclue)
 BTC_DUST_THRESHOLD = 0.0001
+
+# Un seul trade traité à la fois, pour éviter tout chevauchement BUY/SELL
+trade_lock = threading.Lock()
+
+
+def check_secret(value):
+    return hmac.compare_digest(str(value or ""), WEBHOOK_SECRET)
 
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
 
-    # ── Sécurité ──────────────────────────────────────────
-    if not data or data.get('secret') != WEBHOOK_SECRET:
+    if not check_secret(data.get('secret')):
         logging.warning("Webhook rejeté : secret invalide")
         return jsonify({"error": "unauthorized"}), 401
 
-    side   = data.get('side', '').upper()
+    side = data.get('side', '').upper()
     symbol = data.get('symbol', SYMBOL)
 
-    # ── BUY ───────────────────────────────────────────────
-    if side == 'BUY':
-        # 1 trade à la fois : on vérifie qu'il n'y a pas déjà une position ouverte
-        current_btc = okx.get_btc_balance()
-        if current_btc > BTC_DUST_THRESHOLD:
-            logging.warning(f"BUY ignoré : position déjà ouverte ({current_btc} BTC)")
-            return jsonify({"status": "skip", "reason": "position déjà ouverte"}), 200
+    if symbol != SYMBOL:
+        logging.warning(f"Webhook rejeté : symbole non autorisé ({symbol})")
+        return jsonify({"error": "symbole non autorisé"}), 400
 
-        # 2. Calcul du montant en % de l'équité
-        equity = okx.get_equity_usdc()
-        notional = round(equity * (PCT_EQUITY / 100.0), 2)
+    if side not in ('BUY', 'SELL'):
+        return jsonify({"error": "side invalide"}), 400
 
-        if notional < MIN_NOTIONAL:
-            logging.warning(f"BUY ignoré : montant {notional} USDC sous le seuil mini")
-            return jsonify({"status": "skip", "reason": "montant insuffisant"}), 200
+    # Réponse immédiate à TradingView (évite le timeout ~3s) ; traitement en fond.
+    threading.Thread(target=process_signal, args=(side, symbol), daemon=True).start()
+    return jsonify({"status": "accepted", "side": side}), 200
 
-        # 3. Ordre d'achat Market
-        buy_result = okx.place_market_buy(notional, inst_id=symbol)
-        logging.info(f"BUY envoyé : {buy_result}")
 
-        if buy_result.get("code") != "0":
-            logging.error(f"Erreur BUY OKX : {buy_result}")
-            return jsonify({"status": "error", "detail": buy_result}), 500
-
-        order_id = buy_result["data"][0]["ordId"]
-
-          # 4. Récupère le prix moyen d'exécution réel
-        order_details = okx.get_order_details(order_id, inst_id=symbol)
+def process_signal(side, symbol):
+    with trade_lock:
         try:
-            fill = order_details["data"][0]
-            entry_price = float(fill["avgPx"])
-            qty_btc     = float(fill["accFillSz"])  # gardé pour le log/retour JSON uniquement
-        except (KeyError, IndexError, ValueError):
-            logging.error(f"Impossible de lire les détails de l'ordre : {order_details}")
-            return jsonify({"status": "error", "detail": "lecture ordre échouée"}), 500
+            if side == 'BUY':
+                handle_buy(symbol)
+            else:
+                handle_sell(symbol)
+        except Exception:
+            logging.exception(f"Erreur non gérée pendant le traitement du signal {side}")
 
-        # 5. Calcul et pose du Stop Loss
-        sl_price = round(entry_price * (1 - SL_PCT / 100.0), 1)
-        time.sleep(1)
 
-        # Correctif : on interroge le VRAI solde BTC disponible (après frais),
-        # plutôt que la quantité brute accFillSz qui ne tient pas compte
-        # des frais prélevés en BTC sur l'achat -> cause du rejet systématique 51008.
-        real_qty_btc = okx.get_btc_balance()
-        logging.info(f"Solde BTC réel avant pose SL : {real_qty_btc} (vs accFillSz brut : {qty_btc})")
+def handle_buy(symbol):
+    # 1. Position ouverte ? -> solde TOTAL (disponible + bloqué par un SL existant)
+    current_btc_total = okx.get_btc_total()
+    if current_btc_total > BTC_DUST_THRESHOLD:
+        logging.warning(
+            f"BUY ignoré : position déjà ouverte ({current_btc_total} BTC, "
+            f"dont bloqué : {okx.get_btc_frozen()})"
+        )
+        return
 
-        sl_result = okx.place_stop_loss(real_qty_btc, sl_price, inst_id=symbol)
-        
-        return jsonify({
-            "status": "ok",
-            "side": "BUY",
-            "entry_price": entry_price,
-            "qty_btc": real_qty_btc,          # ← quantité réelle utilisée pour le SL
-            "notional_usdc": notional,
-            "sl_price": sl_price,
-            "sl_result": sl_result
-        })
+    # 2. Montant en % de l'équité
+    equity = okx.get_equity_usdc()
+    notional = round(equity * (PCT_EQUITY / 100.0), 2)
+    if notional < MIN_NOTIONAL:
+        logging.warning(f"BUY ignoré : montant {notional} USDC sous le seuil mini")
+        return
 
-    # ── SELL ──────────────────────────────────────────────
-    elif side == 'SELL':
-        qty_btc = okx.get_btc_balance()
-        if qty_btc < BTC_DUST_THRESHOLD:
-            logging.warning("SELL ignoré : pas de BTC en position")
-            return jsonify({"status": "no_position"}), 200
+    # 3. Ordre d'achat Market
+    cl_ord_id = okx.new_cl_ord_id("buy")
+    buy_result = okx.place_market_buy(notional, inst_id=symbol, cl_ord_id=cl_ord_id)
+    logging.info(f"BUY envoyé ({cl_ord_id}) : {buy_result}")
 
-        # 1. Annule le(s) Stop Loss ouverts avant de vendre
-        cancel_result = okx.cancel_all_algo_orders(inst_id=symbol)
-        logging.info(f"SL annulés : {cancel_result}")
+    if buy_result.get("code") != "0":
+        logging.error(f"Erreur BUY OKX : {buy_result}")
+        return
 
-        # 2. Vente Market de tout le BTC disponible
-        sell_result = okx.place_market_sell(qty_btc, inst_id=symbol)
-        logging.info(f"SELL exécuté : {sell_result}")
+    order_id = buy_result["data"][0]["ordId"]
 
-        if sell_result.get("code") != "0":
-            logging.error(f"Erreur SELL OKX : {sell_result}")
-            return jsonify({"status": "error", "detail": sell_result}), 500
+    # 4. Prix moyen d'exécution réel
+    order_details = okx.get_order_details(order_id, inst_id=symbol)
+    try:
+        fill = order_details["data"][0]
+        entry_price = float(fill["avgPx"])
+    except (KeyError, IndexError, ValueError):
+        logging.error(f"Impossible de lire les détails de l'ordre : {order_details}")
+        return
 
-        return jsonify({
-            "status": "ok",
-            "side": "SELL",
-            "qty_btc": qty_btc,
-            "sell_result": sell_result
-        })
+    # 5. Quantité réelle détenue (le fill peut différer légèrement des frais BTC prélevés)
+    time.sleep(1)
+    real_qty_btc = okx.get_btc_total()
+    logging.info(f"Solde BTC réel avant pose SL : {real_qty_btc}")
 
-    return jsonify({"error": "side invalide"}), 400
+    if real_qty_btc <= BTC_DUST_THRESHOLD:
+        logging.error("BTC introuvable après achat, SL non posé")
+        return
 
+    # 6. Pose du Stop Loss + vérification du résultat
+    sl_price = round(entry_price * (1 - SL_PCT / 100.0), 1)
+    sl_cl_ord_id = okx.new_cl_ord_id("sl")
+    sl_result = okx.place_stop_loss(real_qty_btc, sl_price, inst_id=symbol, cl_ord_id=sl_cl_ord_id)
+    logging.info(f"SL posé ({sl_cl_ord_id}) : {sl_result}")
+
+    if sl_result.get("code") != "0":
+        logging.error(f"ECHEC pose SL ({sl_result}) -> vente immédiate de sécurité")
+        emergency_sell(symbol)
+
+
+def handle_sell(symbol):
+    # 1. Annule le(s) Stop Loss AVANT de lire le solde : sinon le BTC bloqué
+    #    par le SL est invisible et le signal est ignoré à tort.
+    cancel_result = okx.cancel_all_algo_orders(inst_id=symbol)
+    logging.info(f"SL annulés : {cancel_result}")
+    time.sleep(0.5)
+
+    qty_btc = okx.get_btc_total()
+    if qty_btc < BTC_DUST_THRESHOLD:
+        logging.warning("SELL ignoré : pas de BTC en position")
+        return
+
+    cl_ord_id = okx.new_cl_ord_id("sell")
+    sell_result = okx.place_market_sell(qty_btc, inst_id=symbol, cl_ord_id=cl_ord_id)
+    logging.info(f"SELL envoyé ({cl_ord_id}) : {sell_result}")
+
+    if sell_result.get("code") != "0":
+        logging.error(f"Erreur SELL OKX : {sell_result}")
+
+
+def emergency_sell(symbol):
+    """Vente de sécurité si la pose du SL a échoué : ne pas laisser une position sans protection."""
+    qty_btc = okx.get_btc_total()
+    if qty_btc <= BTC_DUST_THRESHOLD:
+        return
+    cl_ord_id = okx.new_cl_ord_id("emrg")
+    result = okx.place_market_sell(qty_btc, inst_id=symbol, cl_ord_id=cl_ord_id)
+    logging.error(f"VENTE D'URGENCE ({cl_ord_id}) : {result}")
+
+
+# ── Routes de debug : protégées par le secret, à retirer avant le passage en réel ──
 
 @app.route('/test-okx', methods=['GET'])
 def test_okx():
-    equity = okx.get_equity_usdc()
-    btc_bal = okx.get_btc_balance()
+    if not check_secret(request.args.get('secret')):
+        return jsonify({"error": "unauthorized"}), 401
     return jsonify({
         "status": "ok",
-        "equity_usdc": equity,
-        "btc_balance": btc_bal
+        "equity_usdc": okx.get_equity_usdc(),
+        "btc_available": okx.get_btc_balance(),
+        "btc_total": okx.get_btc_total(),
+        "btc_frozen": okx.get_btc_frozen(),
     })
-    
-@app.route('/test-sell-small', methods=['GET'])
-def test_sell_small():
-    if request.args.get('secret') != WEBHOOK_SECRET:
-        return jsonify({"error": "unauthorized"}), 401
-    qty = request.args.get('qty', '0.001')
-    symbol = request.args.get('symbol', SYMBOL)
-    result = okx.place_market_sell(qty, inst_id=symbol)
-    logging.info(f"TEST SELL small ({qty} BTC) : {result}")
-    return jsonify(result)
 
 
-@app.route('/test-buy-small', methods=['GET'])
-def test_buy_small():
-    if request.args.get('secret') != WEBHOOK_SECRET:
-        return jsonify({"error": "unauthorized"}), 401
-    notional = float(request.args.get('notional', '20'))
-    symbol = request.args.get('symbol', SYMBOL)
-    result = okx.place_market_buy(notional, inst_id=symbol)
-    logging.info(f"TEST BUY small ({notional} USDC) : {result}")
-    return jsonify(result)
-
-@app.route('/test-stop-loss', methods=['GET'])
-def test_stop_loss():
-    if request.args.get('secret') != WEBHOOK_SECRET:
-        return jsonify({"error": "unauthorized"}), 401
-    qty = request.args.get('qty', '0.001')
-    trigger = float(request.args.get('trigger', '50000'))
-    symbol = request.args.get('symbol', 'BTC-EUR')
-    result = okx.place_stop_loss(qty, trigger, inst_id=symbol)
-    return jsonify(result)
-    
 @app.route('/debug-config', methods=['GET'])
 def debug_config():
+    if not check_secret(request.args.get('secret')):
+        return jsonify({"error": "unauthorized"}), 401
     api_key = os.environ.get('OKX_API_KEY', '')
     secret = os.environ.get('OKX_SECRET_KEY', '')
     passphrase = os.environ.get('OKX_PASSPHRASE', '')
@@ -167,8 +168,6 @@ def debug_config():
     return jsonify({
         "OKX_DEMO_value": demo,
         "api_key_length": len(api_key),
-        "api_key_start": api_key[:4] if api_key else "VIDE",
-        "api_key_end": api_key[-4:] if api_key else "VIDE",
         "api_key_has_space": api_key != api_key.strip(),
         "secret_length": len(secret),
         "secret_has_space": secret != secret.strip(),
@@ -176,53 +175,23 @@ def debug_config():
         "passphrase_has_space": passphrase != passphrase.strip(),
     })
 
-@app.route('/debug-balance', methods=['GET'])
-def debug_balance():
-    import requests as req
-    path = "/api/v5/account/balance"
-    r = req.get(okx.BASE_URL + path, headers=okx._headers("GET", path))
-    return jsonify(r.json())
 
-@app.route('/debug-reset-btc', methods=['GET'])
-def debug_reset_btc():
-    if request.args.get('secret') != WEBHOOK_SECRET:
-        return jsonify({"error": "unauthorized"}), 401
-    import requests as req
-    amt = request.args.get('amt', '0.99059359')
-    adj_type = request.args.get('type', 'reduce')
-    path = "/api/v5/account/demo-adjust-balance"
-    body = json.dumps({
-        "type": adj_type,
-        "adjustments": [
-            {"ccy": "BTC", "amt": amt}
-        ]
-    })
-    r = req.post(okx.BASE_URL + path, headers=okx._headers("POST", path, body), data=body)
-    return jsonify(r.json())
-
-@app.route('/debug-book', methods=['GET'])
-def debug_book():
-    import requests as req
-    inst_id = request.args.get('symbol', SYMBOL)
-    sz = request.args.get('sz', '10')
-    path = f"/api/v5/market/books?instId={inst_id}&sz={sz}"
-    r = req.get(okx.BASE_URL + path, headers=okx._headers("GET", path))
-    return jsonify(r.json())
-    
 @app.route('/check-order/<order_id>', methods=['GET'])
 def check_order(order_id):
-    symbol = request.args.get('symbol', 'BTC-USDC')
-    result = okx.get_order_details(order_id, inst_id=symbol)
-    return jsonify(result)
+    if not check_secret(request.args.get('secret')):
+        return jsonify({"error": "unauthorized"}), 401
+    symbol = request.args.get('symbol', SYMBOL)
+    return jsonify(okx.get_order_details(order_id, inst_id=symbol))
+
 
 @app.route('/cleanup-algo', methods=['GET'])
 def cleanup_algo():
-    if request.args.get('secret') != WEBHOOK_SECRET:
+    if not check_secret(request.args.get('secret')):
         return jsonify({"error": "unauthorized"}), 401
-    symbol = request.args.get('symbol', 'BTC-EUR')
-    result = okx.cancel_all_algo_orders(inst_id=symbol)
-    return jsonify(result)
+    symbol = request.args.get('symbol', SYMBOL)
+    return jsonify(okx.cancel_all_algo_orders(inst_id=symbol))
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port) 
+    app.run(host='0.0.0.0', port=port)
