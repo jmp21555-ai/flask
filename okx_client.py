@@ -1,4 +1,8 @@
-import hmac, base64, hashlib, time, json, os, uuid, requests
+import hmac, base64, hashlib, time, json, os, uuid, requests, logging
+
+
+class OkxError(Exception):
+    """Erreur renvoyée par l'API OKX (authentification, IP, maintenance...)."""
 
 BASE_URL = "https://my.okx.com"
 DEMO = os.environ.get('OKX_DEMO', '0') == '1'
@@ -41,30 +45,40 @@ def round_down_lot(qty_btc, lot_size=BTC_LOT_SIZE):
     return round(steps * lot_size, 8)
 
 
-def get_equity_usdc():
-    """Retourne l'équité disponible en USDC."""
+def _balance_details():
+    """Détails du solde. Lève OkxError si OKX répond par une erreur,
+    pour ne JAMAIS confondre une lecture échouée avec un solde nul."""
     path = "/api/v5/account/balance"
     r = requests.get(BASE_URL + path, headers=_headers("GET", path), timeout=10)
-    data = r.json()
     try:
-        details = data["data"][0]["details"]
-        for d in details:
-            if d["ccy"] == "USDC":
-                return float(d["eq"])
-        return 0.0
-    except (KeyError, IndexError, TypeError):
-        return 0.0
+        data = r.json()
+    except ValueError:
+        raise OkxError(f"balance: réponse non JSON (HTTP {r.status_code})")
+    if data.get("code") != "0":
+        msg = f"balance: code={data.get('code')} msg={data.get('msg')}"
+        logging.error(f"Lecture du solde refusée par OKX : {msg}")
+        raise OkxError(msg)
+    rows = data.get("data") or []
+    if not rows:
+        return []
+    return rows[0].get("details") or []
+
+
+def get_equity_usdc():
+    """Équité USDC. 0.0 uniquement si OKX confirme qu'il n'y a pas d'USDC."""
+    for d in _balance_details():
+        if d.get("ccy") == "USDC":
+            return float(d.get("eq") or 0.0)
+    return 0.0
 
 
 def get_btc_balance():
-    """Solde BTC DISPONIBLE (hors BTC bloqué par un ordre stop actif).
-    À ne PAS utiliser pour décider si une position est ouverte."""
+    """Solde BTC DISPONIBLE (hors BTC bloqué par un stop). Ne pas utiliser pour détecter une position."""
     return _get_btc_field("availBal")
 
 
 def get_btc_total():
-    """Solde BTC TOTAL (disponible + bloqué par un ordre algo/stop).
-    C'est ce champ qu'il faut utiliser pour savoir si une position existe."""
+    """Solde BTC TOTAL (disponible + bloqué). À utiliser pour savoir si une position existe."""
     return _get_btc_field("cashBal")
 
 
@@ -74,17 +88,10 @@ def get_btc_frozen():
 
 
 def _get_btc_field(field):
-    path = "/api/v5/account/balance"
-    r = requests.get(BASE_URL + path, headers=_headers("GET", path), timeout=10)
-    data = r.json()
-    try:
-        details = data["data"][0]["details"]
-        for d in details:
-            if d["ccy"] == "BTC":
-                return float(d.get(field, 0.0) or 0.0)
-        return 0.0
-    except (KeyError, IndexError, TypeError):
-        return 0.0
+    for d in _balance_details():
+        if d.get("ccy") == "BTC":
+            return float(d.get(field) or 0.0)
+    return 0.0
 
 
 def get_ticker(inst_id="BTC-USDC"):
@@ -171,3 +178,4 @@ def cancel_all_algo_orders(inst_id="BTC-USDC"):
     body = json.dumps([{"algoId": o["algoId"], "instId": inst_id} for o in open_algos])
     r2 = requests.post(BASE_URL + cancel_path, headers=_headers("POST", cancel_path, body), data=body, timeout=10)
     return r2.json()
+
