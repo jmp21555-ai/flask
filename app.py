@@ -242,7 +242,7 @@ def kill_status():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify({"halted": is_halted(), "flag_file": os.path.exists(KILL_FLAG_PATH)})
 
-# ── Routes de debug : protégées par le secret, à retirer avant le passage en réel ──
+# ── Route de contrôle (lecture seule) ──
 
 @app.route('/test-okx', methods=['GET'])
 def test_okx():
@@ -261,39 +261,7 @@ def test_okx():
         return jsonify({"status": "erreur_okx", "mode": "DEMO" if okx.DEMO else "REEL", "detail": str(e)}), 502
 
 
-@app.route('/debug-config', methods=['GET'])
-def debug_config():
-    if not check_secret(request.args.get('secret')):
-        return jsonify({"error": "unauthorized"}), 401
-    api_key = os.environ.get('OKX_API_KEY', '')
-    secret = os.environ.get('OKX_SECRET_KEY', '')
-    passphrase = os.environ.get('OKX_PASSPHRASE', '')
-    demo = os.environ.get('OKX_DEMO', 'NON_DEFINI')
-    return jsonify({
-        "OKX_DEMO_value": demo,
-        "api_key_length": len(api_key),
-        "api_key_has_space": api_key != api_key.strip(),
-        "secret_length": len(secret),
-        "secret_has_space": secret != secret.strip(),
-        "passphrase_length": len(passphrase),
-        "passphrase_has_space": passphrase != passphrase.strip(),
-    })
 
-
-@app.route('/check-order/<order_id>', methods=['GET'])
-def check_order(order_id):
-    if not check_secret(request.args.get('secret')):
-        return jsonify({"error": "unauthorized"}), 401
-    symbol = request.args.get('symbol', SYMBOL)
-    return jsonify(okx.get_order_details(order_id, inst_id=symbol))
-
-
-@app.route('/cleanup-algo', methods=['GET'])
-def cleanup_algo():
-    if not check_secret(request.args.get('secret')):
-        return jsonify({"error": "unauthorized"}), 401
-    symbol = request.args.get('symbol', SYMBOL)
-    return jsonify(okx.cancel_all_algo_orders(inst_id=symbol))
 
 
 if __name__ == '__main__':
